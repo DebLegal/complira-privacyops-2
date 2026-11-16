@@ -1,0 +1,5 @@
+﻿id,name,role,contract,renewal,owner,status,activity
+VEN-001,CloudNest Hosting,Processor (provisional),Provided · review pending,2027-04-01,Engineering,Review pending,ACT-001
+VEN-002,TicketWay,Processor (provisional),No agreement evidence provided,2027-02-14,Operations,Evidence missing,ACT-002
+VEN-003,InsightBeacon,Undetermined,No agreement evidence provided,2027-01-31,Engineering,Evidence missing,ACT-003
+VEN-004,MailSwift,Processor (provisional),Provided · review pending,2027-07-20,Growth,Review pending,ACT-004

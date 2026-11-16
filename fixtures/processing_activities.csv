@@ -1,0 +1,5 @@
+﻿id,name,purpose,data,system,vendor,owner,retention,status
+ACT-001,User registration,Account creation and access,"Name, email, account ID",Product database,CloudNest Hosting,Product,Account lifetime + documented exceptions,Reviewed
+ACT-002,Customer support,Service support and issue resolution,"Email, ticket content",Helpdesk,TicketWay,Operations,24 months (policy proposal),Needs review
+ACT-003,Product analytics,Feature usage analytics,"Account ID, usage events",Product SDK,InsightBeacon,Engineering,Not established,Needs review
+ACT-004,Lifecycle emails,Account-related communications,"Email, notification preferences",Messaging,MailSwift,Growth,12 months (policy proposal),Reviewed

@@ -1,0 +1,4 @@
+﻿id,finding,name,owner,due,status
+TASK-001,FND-001,Review purpose wording in published notice,Product,2026-11-21,In progress
+TASK-002,FND-002,Request TicketWay contractual terms,Operations,2026-11-22,Open
+TASK-003,FND-003,Agree analytics retention schedule,Engineering,2026-11-27,Open

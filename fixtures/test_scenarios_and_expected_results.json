@@ -1,0 +1,196 @@
+{
+  "schemaVersion": "complira.scenarios.v1",
+  "disclaimer": "SYNTHETIC DATA ONLY — no real client records, personal data or verified legal conclusion",
+  "expected_initial_counts": {
+    "activities": 4,
+    "vendors": 4,
+    "notice_versions": 2,
+    "findings_open": 4,
+    "actions": 3,
+    "changes": 2
+  },
+  "scenarios": [
+    {
+      "id": "SC-01",
+      "name": "Analytics onboarding requires four review prompts",
+      "input": {
+        "change_type": "New vendor",
+        "title": "Additional product analytics processing",
+        "activity_id": "ACT-003",
+        "vendor_id": "VEN-003",
+        "owner": "Engineering"
+      },
+      "expected_rule_ids": [
+        "NOTICE_PURPOSE_MISMATCH",
+        "VENDOR_CONTRACT_EVIDENCE_MISSING",
+        "RETENTION_RULE_UNDEFINED",
+        "VENDOR_ROLE_UNDETERMINED"
+      ],
+      "expected_assertions": [
+        "Show review suggestions, not verified violations",
+        "A/B source record metadata shown",
+        "No invented signed DPA or notice text"
+      ]
+    },
+    {
+      "id": "SC-02",
+      "name": "Repeated checks do not duplicate findings",
+      "input": {
+        "check_same_change": "SC-01",
+        "run_count": 2
+      },
+      "expected_assertions": [
+        "Stable fingerprint for same source versions",
+        "Exactly one new actionable finding per triggered rule",
+        "Audit evaluation event preserved"
+      ]
+    },
+    {
+      "id": "SC-03",
+      "name": "Editor submits evidence for closure",
+      "input": {
+        "persona": "demo-editor",
+        "finding_id": "FND-003",
+        "note": "Synthetic retention schedule metadata added",
+        "evidence_reference": "SYNTH-RETENTION-v1"
+      },
+      "expected_assertions": [
+        "Moves to pending_closure",
+        "Does not become closed",
+        "No real upload or verified legal assertion"
+      ]
+    },
+    {
+      "id": "SC-04",
+      "name": "Simulated reviewer approves documented closure",
+      "input": {
+        "persona": "demo-reviewer",
+        "finding_id": "FND-003",
+        "note": "Reviewed synthetic metadata only",
+        "evidence_reference": "SYNTH-RETENTION-v1"
+      },
+      "expected_assertions": [
+        "Closure allowed after valid pending state",
+        "Decision contains persona, reason, runtime timestamp",
+        "Prior history persists"
+      ]
+    },
+    {
+      "id": "SC-05",
+      "name": "Editor cannot approve",
+      "input": {
+        "persona": "demo-editor",
+        "action": "approve_closure",
+        "finding_id": "FND-003"
+      },
+      "expected_assertions": [
+        "Permission denied",
+        "State unchanged",
+        "No fake reviewer signoff"
+      ]
+    },
+    {
+      "id": "SC-06",
+      "name": "Notice version updates purpose map only after approval",
+      "input": {
+        "create_draft_version": "v3.0",
+        "add_mapped_activity_id": "ACT-003",
+        "persona": "demo-editor"
+      },
+      "expected_assertions": [
+        "Current v2 purpose map remains unchanged before review",
+        "Draft diff shows ACT-003 added",
+        "Reviewer approval can make v3 current in synthetic register"
+      ]
+    },
+    {
+      "id": "SC-07",
+      "name": "Add then edit activity and preserve linked change",
+      "input": {
+        "create_activity": {
+          "name": "Trial signup",
+          "purpose": "Evaluation account registration",
+          "data_categories": [
+            "Business email"
+          ],
+          "system": "Web application",
+          "owner_team": "Product",
+          "retention_description": "Not established"
+        }
+      },
+      "expected_assertions": [
+        "New unique ACT code",
+        "Overview total increments",
+        "Related change preserves link through updates"
+      ]
+    },
+    {
+      "id": "SC-08",
+      "name": "Contract evidence absence is not legal breach",
+      "input": {
+        "vendor_id": "VEN-002",
+        "contract_evidence_status": "not_established_from_register"
+      },
+      "expected_assertions": [
+        "Say evidence not established from register",
+        "Do not say no contract exists",
+        "Suggest obtain and verify evidence"
+      ]
+    },
+    {
+      "id": "SC-09",
+      "name": "CSV malicious formula strings",
+      "input": {
+        "test_strings": [
+          "=2+2",
+          "+HYPERLINK(\"https://example.invalid\")",
+          "-1+2",
+          "@SUM(A1:A2)",
+          "  =1+1",
+          "\t@SUM(A1:A2)"
+        ]
+      },
+      "expected_assertions": [
+        "CSV import treats all strings as text",
+        "No formula executed",
+        "Report includes synthetic-only disclaimer"
+      ]
+    },
+    {
+      "id": "SC-10",
+      "name": "Cross tenant denial",
+      "input": {
+        "fixture": "tenant_isolation_test_data.json"
+      },
+      "expected_assertions": [
+        "All must_deny cases blocked in live-mode tests",
+        "All must_allow cases succeed",
+        "No role self-selection in live mode"
+      ]
+    },
+    {
+      "id": "SC-11",
+      "name": "Reset synthetic workspace",
+      "input": {
+        "perform": "mutate then reset"
+      },
+      "expected_assertions": [
+        "Exact original reference counts restored",
+        "No real data affected",
+        "No background external API requests"
+      ]
+    },
+    {
+      "id": "SC-12",
+      "name": "Reports reflect change and approval state",
+      "input": {
+        "run": "SC-01 then SC-03 then SC-04"
+      },
+      "expected_assertions": [
+        "JSON valid with schemaVersion and timestamp",
+        "CSV current records and escaped values",
+        "Print scope/limitations/not reviewed visible"
+      ]
+    }
+  ]
+}
