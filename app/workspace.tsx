@@ -1,5 +1,10 @@
 "use client";
 import Link from "next/link";
+import { flushSync } from "react-dom";
+import { useRouter } from "next/navigation";
+import ChangeWizard from "../components/change-wizard";
+import CommandSearch from "../components/command-search";
+import type { LiveWorkspace } from "../server/workspace";
 import {
   useEffect,
   useRef,
@@ -9,6 +14,7 @@ import {
   type ReactNode,
 } from "react";
 import {
+  DEMO_CHECK_DATE,
   currentNotice,
   evaluate,
   exportCsv,
@@ -31,7 +37,12 @@ const NAV = [
   ["reports", "Reports"],
 ];
 const fmt = (s: string) => s.replaceAll("_", " ");
-type Modal = { kind: string; id?: string };
+type Modal = {
+  kind: string;
+  id?: string;
+  activityId?: string;
+  vendorId?: string;
+};
 function Field({
   label,
   name,
@@ -134,23 +145,83 @@ function Table({ headers, rows }: { headers: string[]; rows: ReactNode[][] }) {
     </div>
   );
 }
+function ActionButtons({
+  items,
+  readOnly = false,
+}: {
+  items: [string, () => void][];
+  readOnly?: boolean;
+}) {
+  return (
+    <div className="row-actions">
+      {items
+        .filter(
+          ([text]) =>
+            !readOnly ||
+            ![
+              "Edit",
+              "Archive",
+              "Restore",
+              "Edit change",
+              "Review change",
+              "Submit review",
+              "Assign / set due date",
+              "Request closure",
+              "Review closure",
+              "Reopen",
+            ].includes(text),
+        )
+        .map(([text, fn]) => (
+          <button className="text-btn" key={text} onClick={fn}>
+            {text}
+          </button>
+        ))}
+    </div>
+  );
+}
 const subscribe = () => () => {};
-export default function Workspace({ module }: { module: string }) {
+export default function Workspace({
+  module,
+  live,
+}: {
+  module: string;
+  live?: LiveWorkspace;
+}) {
   const client = useSyncExternalStore(
     subscribe,
     () => true,
     () => false,
   );
   return client ? (
-    <ReadyWorkspace module={module} />
+    <ReadyWorkspace module={module} live={live} />
   ) : (
-    <p>Loading synthetic workspace…</p>
+    <p>
+      {live ? "Loading private workspace…" : "Loading synthetic workspace…"}
+    </p>
   );
 }
-function ReadyWorkspace({ module }: { module: string }) {
+function ReadyWorkspace({
+  module,
+  live,
+}: {
+  module: string;
+  live?: LiveWorkspace;
+}) {
+  const router = useRouter();
+  const [liveVersion, setLiveVersion] = useState(live?.version || 1),
+    [busy, setBusy] = useState(false),
+    [dirty, setDirty] = useState(false);
+  const retry = useRef<{ body: string; id: string } | null>(null);
+  const [reportTime] = useState(() => new Date().toISOString());
+  const mode = live ? "app" : "demo";
+  const href = (section: string, id?: string) =>
+    `/${mode}/${section}${live ? `?org=${live.organizationId}${id ? `&record=${id}` : ""}` : id ? `?record=${id}` : ""}`;
   const [loaded] = useState(() => {
     try {
-      return { state: sessionRepository(sessionStorage).load(), warning: "" };
+      return {
+        state: live?.state || sessionRepository(sessionStorage).load(),
+        warning: "",
+      };
     } catch {
       return {
         state: seed(),
@@ -162,7 +233,11 @@ function ReadyWorkspace({ module }: { module: string }) {
   const [s, setS] = useState<State>(loaded.state),
     [ready] = useState(true),
     [persona, setPersona] = useState<Persona>(() =>
-      sessionStorage.getItem("complira.persona") === "reviewer"
+      (
+        live
+          ? live.role === "reviewer"
+          : sessionStorage.getItem("complira.persona") === "reviewer"
+      )
         ? "reviewer"
         : "editor",
     ),
@@ -181,33 +256,109 @@ function ReadyWorkspace({ module }: { module: string }) {
       returnFocus.current?.focus();
     }
   }, [modal]);
-  const act = (cmd: Command) => {
+  const closeModal = () => {
+    if (dirty && !confirm("Discard unsaved changes?")) return;
+    setDirty(false);
+    setModal(null);
+  };
+  useEffect(() => {
+    const guard = (e: BeforeUnloadEvent) => {
+      if (dirty) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    };
+    window.addEventListener("beforeunload", guard);
+    return () => window.removeEventListener("beforeunload", guard);
+  }, [dirty]);
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      const id = new URLSearchParams(window.location.search).get("record");
+      if (id) {
+        const kind = id.startsWith("ACT")
+          ? "activity-detail"
+          : id.startsWith("VEN")
+            ? "vendor-detail"
+            : id.startsWith("FND")
+              ? "finding"
+              : id.startsWith("NOTICE")
+                ? "compare"
+                : id.startsWith("TASK")
+                  ? "task"
+                  : "checks";
+        setModal({ kind, id });
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [module]);
+  const act = async (cmd: Command): Promise<boolean> => {
+    if (busy) return false;
+    setBusy(true);
+    setMessage("Saving…");
     try {
-      const next = transition(s, cmd, persona, new Date().toISOString());
-      sessionRepository(sessionStorage).save(next);
-      setS(next);
+      if (live) {
+        const body = JSON.stringify({
+          organizationId: live.organizationId,
+          expectedVersion: liveVersion,
+          command: cmd,
+        });
+        if (retry.current?.body !== body)
+          retry.current = { body, id: crypto.randomUUID() };
+        const response = await fetch("/api/live/mutations", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ...JSON.parse(body),
+            requestId: retry.current.id,
+          }),
+        });
+        const data = await response.json();
+        if (!response.ok)
+          throw Error(
+            data.error +
+              (data.issues
+                ? " · " +
+                  data.issues
+                    .map((i: { message: string }) => i.message)
+                    .join("; ")
+                : ""),
+          );
+        setS(data.state);
+        setLiveVersion(data.version);
+        retry.current = null;
+      } else {
+        const next = transition(
+          s,
+          cmd.type === "record"
+            ? { ...cmd, evaluation_date: DEMO_CHECK_DATE }
+            : cmd,
+          persona,
+          new Date().toISOString(),
+        );
+        sessionRepository(sessionStorage).save(next);
+        setS(next);
+      }
+      setDirty(false);
       setModal(null);
-      setMessage("Synthetic register updated.");
+      setMessage(
+        live ? "Private register saved." : "Synthetic register updated.",
+      );
+      return true;
     } catch (e) {
       setMessage(e instanceof Error ? e.message : "Operation failed");
+      return false;
+    } finally {
+      setBusy(false);
     }
   };
   const open = (kind: string, id?: string) => {
     setMessage("");
+    setDirty(false);
     setModal({ kind, id });
   };
-  const buttons = (items: [string, () => void][]) => (
-    <div className="row-actions">
-      {items.map(([text, fn]) => (
-        <button className="text-btn" key={text} onClick={fn}>
-          {text}
-        </button>
-      ))}
-    </div>
-  );
   const matching = (x: unknown) =>
     JSON.stringify(x).toLowerCase().includes(query.toLowerCase());
-  const date = new Date().toISOString().slice(0, 10);
+  const date = live ? new Date().toISOString().slice(0, 10) : DEMO_CHECK_DATE;
   const notice = currentNotice(s);
   const a = s.processing_activities.find((x) => x.id === modal?.id),
     v = s.vendors.find((x) => x.id === modal?.id),
@@ -246,7 +397,7 @@ function ReadyWorkspace({ module }: { module: string }) {
     const data = new FormData(e.currentTarget);
     const val = (k: string) => String(data.get(k) || "").trim();
     const list = (k: string) => data.getAll(k).map(String);
-    const common = { version: 1 };
+    const common = { version: (a || v || n || t)?.version || 1 };
     if (modal?.kind === "activity")
       act({
         type: "activity",
@@ -265,6 +416,7 @@ function ReadyWorkspace({ module }: { module: string }) {
           vendor_ids: list("vendor_ids"),
           retention_description: val("retention_description"),
           retention_verified: false,
+          retention_evidence_reference: val("retention_evidence_reference"),
           review_status: "requires_document_review",
         },
       });
@@ -310,22 +462,6 @@ function ReadyWorkspace({ module }: { module: string }) {
           actual_published_notice_verified: false,
         },
       });
-    if (modal?.kind === "change")
-      act({
-        type: "change",
-        record: {
-          ...common,
-          id: nextId(s.change_requests, "CHG"),
-          title: val("title"),
-          owner_team: val("owner_team"),
-          change_type: val("change_type") as "New vendor",
-          activity_id: val("activity_id") || null,
-          vendor_id: val("vendor_id") || null,
-          notes: val("notes"),
-          recorded_date: date,
-          state: "new",
-        },
-      });
     if (modal?.kind === "assignment" && f)
       act({
         type: "assignment",
@@ -366,6 +502,13 @@ function ReadyWorkspace({ module }: { module: string }) {
       });
   }
   function download(kind: "csv" | "json") {
+    if (live) {
+      const anchor = document.createElement("a");
+      anchor.href = `/api/live/reports?organizationId=${live.organizationId}&format=${kind}`;
+      anchor.download = `complira-private-report.${kind}`;
+      anchor.click();
+      return;
+    }
     const blob = new Blob(
       [
         kind === "csv"
@@ -381,6 +524,33 @@ function ReadyWorkspace({ module }: { module: string }) {
     anchor.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
+  const printReport = async () => {
+    if (!live) {
+      window.print();
+      return;
+    }
+    if (busy) return;
+    setBusy(true);
+    setMessage("Loading the persisted report…");
+    try {
+      const response = await fetch(
+        `/api/live/reports?organizationId=${live.organizationId}&format=json`,
+        { cache: "no-store" },
+      );
+      const report = await response.json();
+      if (!response.ok) throw Error(report.error || "Report unavailable");
+      flushSync(() => {
+        setS(report.workspace);
+        setLiveVersion(report.workspace_version);
+      });
+      setMessage("Report reflects persisted customer records.");
+      window.print();
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : "Report unavailable");
+    } finally {
+      setBusy(false);
+    }
+  };
   const reset = () => {
     if (confirm("Reset the fictional workspace to its original records?")) {
       try {
@@ -395,16 +565,25 @@ function ReadyWorkspace({ module }: { module: string }) {
   };
   return (
     <div className="app-shell">
+      <a href="#content" className="skip-link">
+        Skip to workspace
+      </a>
       <aside className="sidebar">
         <div className="brand">
           Complira<span>PrivacyOps</span>
         </div>
-        <div className="workspace-label">MapleStack SaaS · Demo</div>
+        <div className="workspace-label">
+          {live ? live.organizationName : "MapleStack SaaS · Demo"}
+        </div>
         <nav aria-label="Main navigation">
           {NAV.map(([id, label]) => (
             <Link
               key={id}
-              href={`/demo/${id}`}
+              href={href(id)}
+              onClick={(e) => {
+                if (dirty && !confirm("Discard unsaved changes?"))
+                  e.preventDefault();
+              }}
               aria-current={module === id ? "page" : undefined}
               className={module === id ? "active" : ""}
             >
@@ -413,40 +592,113 @@ function ReadyWorkspace({ module }: { module: string }) {
           ))}
         </nav>
         <div className="sidebar-bottom">
-          Fictional workspace
-          <br />
-          Seven-module synthetic MVP
+          {live ? (
+            <>
+              <Link href="/app/setup">Switch organization</Link>
+              <br />
+              <Link href={href("members")}>Manage members</Link>
+              <br />
+              <button
+                onClick={async () => {
+                  await fetch("/api/live/signout", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: "{}",
+                  });
+                  router.replace("/login");
+                  router.refresh();
+                }}
+              >
+                Sign out
+              </button>
+            </>
+          ) : (
+            <>
+              Fictional workspace
+              <br />
+              Seven-module synthetic MVP
+            </>
+          )}
         </div>
       </aside>
       <div className="main">
         <header className="topbar">
           <span>{NAV.find((x) => x[0] === module)?.[1]}</span>
-          <label>
-            Demo persona{" "}
-            <select
-              aria-label="Demo persona"
-              value={persona}
-              onChange={(e) => {
-                setPersona(e.target.value as Persona);
-                sessionStorage.setItem("complira.persona", e.target.value);
-              }}
-            >
-              <option value="editor">Editor (Demo)</option>
-              <option value="reviewer">Reviewer (Demo)</option>
-            </select>
-          </label>
+          <CommandSearch
+            state={s}
+            onSelect={(section, id) => {
+              if (section === module && id) {
+                open(
+                  id.startsWith("ACT")
+                    ? "activity-detail"
+                    : id.startsWith("VEN")
+                      ? "vendor-detail"
+                      : id.startsWith("FND")
+                        ? "finding"
+                        : id.startsWith("NOTICE")
+                          ? "compare"
+                          : id.startsWith("TASK")
+                            ? "task"
+                            : "checks",
+                  id,
+                );
+              } else router.push(href(section, id));
+            }}
+          />
+          {live ? (
+            <span className="role-badge">{live.role} · Private workspace</span>
+          ) : (
+            <label>
+              Demo persona{" "}
+              <select
+                aria-label="Demo persona"
+                value={persona}
+                onChange={(e) => {
+                  setPersona(e.target.value as Persona);
+                  sessionStorage.setItem("complira.persona", e.target.value);
+                }}
+              >
+                <option value="editor">Editor (Demo)</option>
+                <option value="reviewer">Reviewer (Demo)</option>
+              </select>
+            </label>
+          )}
         </header>
         <main id="content">
           <div className="notice-bar">
-            <b>SYNTHETIC DATA ONLY</b> · Fictional MapleStack records. Persona
-            switching is a simulation, not authentication. No real uploads or
-            personal data.
+            {live ? (
+              <>
+                <b>PRIVATE METADATA BETA</b> · Record metadata only. File
+                uploads are disabled. Customer signoff required.
+              </>
+            ) : (
+              <>
+                <b>SYNTHETIC DATA ONLY</b> · Fictional MapleStack records.
+                Persona switching is SIMULATION ONLY, not authentication. No
+                real uploads or personal data. Checks use {DEMO_CHECK_DATE} for
+                repeatable fixture reviews.
+              </>
+            )}
           </div>
-          <div role="status" className="status-message">
-            {message}
+          {live?.role === "viewer" && (
+            <p className="aside-note">
+              Read-only membership: mutations are refused by the server.
+            </p>
+          )}
+          <div role="status" aria-live="polite" className="status-message">
+            {message}{" "}
+            {message.includes("conflict") && (
+              <button onClick={() => window.location.reload()}>
+                Reload current register
+              </button>
+            )}
           </div>
           {!ready ? (
-            <p>Loading synthetic workspace…</p>
+            <p>
+              {live
+                ? "Loading private workspace…"
+                : "Loading synthetic workspace…"}
+            </p>
           ) : (
             <>
               <div className="page-heading">
@@ -459,13 +711,27 @@ function ReadyWorkspace({ module }: { module: string }) {
                 </div>
                 <div className="heading-actions">
                   {module === "overview" ? (
-                    buttons([
-                      ["+ New change", () => open("change")],
-                      ["Reset demo", reset],
-                    ])
+                    <>
+                      <button
+                        className="btn primary"
+                        onClick={() =>
+                          open(
+                            s.processing_activities.length
+                              ? "change"
+                              : "activity",
+                          )
+                        }
+                      >
+                        {s.processing_activities.length
+                          ? "+ New change"
+                          : "+ Add activity"}
+                      </button>
+                      {!live && <button onClick={reset}>Reset demo</button>}
+                    </>
                   ) : module === "processing" ? (
                     <button
                       className="btn primary"
+                      disabled={busy || live?.role === "viewer"}
                       onClick={() => open("activity")}
                     >
                       + Add activity
@@ -473,6 +739,7 @@ function ReadyWorkspace({ module }: { module: string }) {
                   ) : module === "vendors" ? (
                     <button
                       className="btn primary"
+                      disabled={busy || live?.role === "viewer"}
                       onClick={() => open("vendor")}
                     >
                       + Add vendor
@@ -480,6 +747,7 @@ function ReadyWorkspace({ module }: { module: string }) {
                   ) : module === "notices" ? (
                     <button
                       className="btn primary"
+                      disabled={busy || live?.role === "viewer"}
                       onClick={() => open("notice")}
                     >
                       + Create draft
@@ -487,6 +755,7 @@ function ReadyWorkspace({ module }: { module: string }) {
                   ) : module === "changes" ? (
                     <button
                       className="btn primary"
+                      disabled={busy || live?.role === "viewer"}
                       onClick={() => open("change")}
                     >
                       + New change
@@ -494,6 +763,7 @@ function ReadyWorkspace({ module }: { module: string }) {
                   ) : module === "findings" ? (
                     <button
                       className="btn primary"
+                      disabled={busy || live?.role === "viewer"}
                       onClick={() => open("task")}
                     >
                       + Record action
@@ -515,6 +785,42 @@ function ReadyWorkspace({ module }: { module: string }) {
               )}
               {module === "overview" && (
                 <>
+                  <section className="hero-review">
+                    <div>
+                      <div className="eyebrow">YOUR NEXT PRIVACY REVIEW</div>
+                      <h2>
+                        {s.processing_activities.length
+                          ? "A product or vendor changed? Start with its records."
+                          : "Build your first connected register"}
+                      </h2>
+                      <p>
+                        {s.processing_activities.length
+                          ? "Describe the change, link its sources and preview the review work."
+                          : "Add a processing activity, link its vendor, then review a change. Your register starts empty; no sample customer data is inserted."}
+                      </p>
+                      <p>
+                        <b>
+                          {
+                            s.findings.filter(
+                              (f) => f.state === "pending_closure",
+                            ).length
+                          }
+                        </b>{" "}
+                        closure requests awaiting independent review ·{" "}
+                        <b>
+                          {
+                            s.remediation_actions.filter(
+                              (t) =>
+                                t.state !== "closed" &&
+                                t.due_date &&
+                                t.due_date < date,
+                            ).length
+                          }
+                        </b>{" "}
+                        overdue actions
+                      </p>
+                    </div>
+                  </section>
                   <div className="metrics">
                     {[
                       [
@@ -537,7 +843,11 @@ function ReadyWorkspace({ module }: { module: string }) {
                       <div className="metric" key={label}>
                         <div className="label">{label}</div>
                         <div className="value">{value}</div>
-                        <div className="desc">Live synthetic register</div>
+                        <div className="desc">
+                          {live
+                            ? "Persisted customer records"
+                            : "Live synthetic register"}
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -565,7 +875,39 @@ function ReadyWorkspace({ module }: { module: string }) {
                           </div>
                         ))}
                     </Panel>
-                    <Panel title="Workspace health">
+                    <Panel title="Due reviews and next actions">
+                      {s.vendors
+                        .filter(
+                          (v) =>
+                            v.next_review_date && v.next_review_date <= date,
+                        )
+                        .map((v) => (
+                          <p key={v.id}>
+                            <button
+                              className="text-btn"
+                              onClick={() => open("vendor-detail", v.id)}
+                            >
+                              {v.name} · Review due {v.next_review_date}
+                            </button>
+                          </p>
+                        ))}
+                      {s.remediation_actions
+                        .filter((t) => t.state !== "closed")
+                        .slice(0, 3)
+                        .map((t) => (
+                          <p key={t.id}>
+                            <button
+                              className="text-btn"
+                              onClick={() => open("task", t.id)}
+                            >
+                              {t.title}
+                            </button>
+                            <br />
+                            <small>
+                              {t.owner_team} · {t.due_date || "Assign due date"}
+                            </small>
+                          </p>
+                        ))}
                       <p>
                         Records with owners:{" "}
                         {
@@ -627,7 +969,14 @@ function ReadyWorkspace({ module }: { module: string }) {
                     rows={s.processing_activities.filter(matching).map((x) => [
                       <div key="name">
                         <b>{x.id}</b>
-                        <p>{x.name}</p>
+                        <p>
+                          <button
+                            className="text-btn"
+                            onClick={() => open("activity-detail", x.id)}
+                          >
+                            {x.name}
+                          </button>
+                        </p>
                       </div>,
                       <div key="purpose">
                         {x.purpose}
@@ -642,18 +991,29 @@ function ReadyWorkspace({ module }: { module: string }) {
                         <p>{x.retention_description}</p>
                       </div>,
                       x.archived ? "Archived" : fmt(x.review_status),
-                      buttons([
-                        ["Edit", () => open("activity", x.id)],
-                        [
-                          x.archived ? "Restore" : "Archive",
-                          () =>
-                            act({
-                              type: "archive",
-                              collection: "processing_activities",
-                              id: x.id,
-                            }),
-                        ],
-                      ]),
+                      <ActionButtons
+                        readOnly={live?.role === "viewer"}
+                        key="actions"
+                        items={[
+                          ["Edit", () => open("activity", x.id)],
+                          [
+                            "Review change",
+                            () => {
+                              setDirty(false);
+                              setModal({ kind: "change", activityId: x.id });
+                            },
+                          ],
+                          [
+                            x.archived ? "Restore" : "Archive",
+                            () =>
+                              act({
+                                type: "archive",
+                                collection: "processing_activities",
+                                id: x.id,
+                              }),
+                          ],
+                        ]}
+                      />,
                     ])}
                   />
                 </Panel>
@@ -672,7 +1032,14 @@ function ReadyWorkspace({ module }: { module: string }) {
                     rows={s.vendors.filter(matching).map((x) => [
                       <div key="name">
                         <b>{x.id}</b>
-                        <p>{x.name}</p>
+                        <p>
+                          <button
+                            className="text-btn"
+                            onClick={() => open("vendor-detail", x.id)}
+                          >
+                            {x.name}
+                          </button>
+                        </p>
                         {x.archived && <span>Archived</span>}
                       </div>,
                       <div key="links">
@@ -688,18 +1055,29 @@ function ReadyWorkspace({ module }: { module: string }) {
                         </p>
                       </div>,
                       `${x.renewal_date || "No renewal"} / ${x.next_review_date || "No review date"}`,
-                      buttons([
-                        ["Edit", () => open("vendor", x.id)],
-                        [
-                          x.archived ? "Restore" : "Archive",
-                          () =>
-                            act({
-                              type: "archive",
-                              collection: "vendors",
-                              id: x.id,
-                            }),
-                        ],
-                      ]),
+                      <ActionButtons
+                        readOnly={live?.role === "viewer"}
+                        key="actions"
+                        items={[
+                          ["Edit", () => open("vendor", x.id)],
+                          [
+                            "Review change",
+                            () => {
+                              setDirty(false);
+                              setModal({ kind: "change", vendorId: x.id });
+                            },
+                          ],
+                          [
+                            x.archived ? "Restore" : "Archive",
+                            () =>
+                              act({
+                                type: "archive",
+                                collection: "vendors",
+                                id: x.id,
+                              }),
+                          ],
+                        ]}
+                      />,
                     ])}
                   />
                   <div className="aside-note">
@@ -724,25 +1102,29 @@ function ReadyWorkspace({ module }: { module: string }) {
                         x.title,
                         x.mapped_activity_ids.join(", "),
                         fmt(x.status),
-                        buttons([
-                          ["Compare", () => open("compare", x.id)],
-                          ...(["draft", "rejected"].includes(x.status)
-                            ? ([
-                                ["Edit", () => open("notice", x.id)],
-                                [
-                                  "Submit review",
-                                  () =>
-                                    act({ type: "submit_notice", id: x.id }),
-                                ],
-                              ] as [string, () => void][])
-                            : []),
-                          ...(x.status === "pending_review"
-                            ? ([["Review", () => open("review", x.id)]] as [
-                                string,
-                                () => void,
-                              ][])
-                            : []),
-                        ]),
+                        <ActionButtons
+                          readOnly={live?.role === "viewer"}
+                          key="actions"
+                          items={[
+                            ["Compare", () => open("compare", x.id)],
+                            ...(["draft", "rejected"].includes(x.status)
+                              ? ([
+                                  ["Edit", () => open("notice", x.id)],
+                                  [
+                                    "Submit review",
+                                    () =>
+                                      act({ type: "submit_notice", id: x.id }),
+                                  ],
+                                ] as [string, () => void][])
+                              : []),
+                            ...(x.status === "pending_review"
+                              ? ([["Review", () => open("review", x.id)]] as [
+                                  string,
+                                  () => void,
+                                ][])
+                              : []),
+                          ]}
+                        />,
                       ])}
                     />
                   </Panel>
@@ -752,9 +1134,9 @@ function ReadyWorkspace({ module }: { module: string }) {
                       {notice?.mapped_activity_ids.join(", ")}
                     </p>
                     <div className="aside-note">
-                      Current means current inside this synthetic register only.
-                      Actual publication and legal adequacy have not been
-                      verified.
+                      Current means current inside this{" "}
+                      {live ? "customer" : "synthetic"} register only. Actual
+                      publication and legal adequacy have not been verified.
                     </div>
                   </Panel>
                 </>
@@ -780,9 +1162,14 @@ function ReadyWorkspace({ module }: { module: string }) {
                         x.owner_team,
                         `${x.activity_id || "No activity"} / ${x.vendor_id || "No vendor"}`,
                         fmt(x.state),
-                        buttons([
-                          ["Review checks", () => open("checks", x.id)],
-                        ]),
+                        <ActionButtons
+                          readOnly={live?.role === "viewer"}
+                          key="actions"
+                          items={[
+                            ["Review checks", () => open("checks", x.id)],
+                            ["Edit change", () => open("change", x.id)],
+                          ]}
+                        />,
                       ])}
                   />
                 </Panel>
@@ -842,20 +1229,85 @@ function ReadyWorkspace({ module }: { module: string }) {
                 <>
                   <Panel title="Current-state exports">
                     <p>
-                      SYNTHETIC DATA ONLY — not an audit, certification or legal
-                      opinion.
+                      {live
+                        ? "PRIVATE CUSTOMER METADATA"
+                        : "SYNTHETIC DATA ONLY"}{" "}
+                      — not an audit, certification or legal opinion.
                     </p>
                     <p>
-                      Scope: fictional MapleStack register metadata. Not
-                      reviewed: real documents, actual notices, live systems,
-                      security controls, legal sufficiency.
+                      Scope:{" "}
+                      {live
+                        ? "customer-supplied metadata"
+                        : "fictional MapleStack register metadata"}
+                      . Not reviewed: real documents, actual notices, live
+                      systems, security controls, legal sufficiency.
                     </p>
-                    {buttons([
-                      ["Export CSV", () => download("csv")],
-                      ["Export JSON", () => download("json")],
-                      ["Print / PDF", () => window.print()],
-                      ["Reset demo", reset],
-                    ])}
+                    {
+                      <ActionButtons
+                        readOnly={live?.role === "viewer"}
+                        key="actions"
+                        items={[
+                          ["Export CSV", () => download("csv")],
+                          ["Export JSON", () => download("json")],
+                          [
+                            "Print / PDF",
+                            () => {
+                              void printReport();
+                            },
+                          ],
+                          ...(!live
+                            ? ([["Reset demo", reset]] as [
+                                string,
+                                () => void,
+                              ][])
+                            : []),
+                        ]}
+                      />
+                    }
+                  </Panel>
+                  <Panel title="Scope, as-of time and assumptions">
+                    <p>
+                      As of {reportTime}. Register versions are included in JSON
+                      and finding versions in CSV.
+                    </p>
+                    <p>
+                      Source fields are metadata, not reviewed document
+                      excerpts. Missing source documents: not established from
+                      material supplied. Legal references are unverified and
+                      version-specific.
+                    </p>
+                    <p>
+                      Outstanding actions:{" "}
+                      {
+                        s.remediation_actions.filter(
+                          (t) => t.state !== "closed",
+                        ).length
+                      }
+                      . Decisions: {s.review_decisions.length}. A current notice
+                      is recorded here; it does not update a customer website.
+                    </p>
+                  </Panel>
+                  <Panel title="Outstanding actions">
+                    <Table
+                      headers={[
+                        "Action",
+                        "Finding",
+                        "Owner",
+                        "Due",
+                        "State",
+                        "Version",
+                      ]}
+                      rows={s.remediation_actions
+                        .filter((t) => t.state !== "closed")
+                        .map((t) => [
+                          t.title,
+                          t.finding_id,
+                          t.owner_team,
+                          t.due_date || "Not assigned",
+                          fmt(t.state),
+                          t.version,
+                        ])}
+                    />
                   </Panel>
                   <Panel title="Findings and review decisions">
                     <Table
@@ -901,9 +1353,14 @@ function ReadyWorkspace({ module }: { module: string }) {
       </div>
       <dialog
         ref={dialog}
-        onCancel={() => setModal(null)}
+        onInput={() => setDirty(true)}
+        aria-busy={busy}
+        onCancel={(e) => {
+          e.preventDefault();
+          closeModal();
+        }}
         onClick={(e) => {
-          if (e.target === e.currentTarget) setModal(null);
+          if (e.target === e.currentTarget) closeModal();
         }}
         aria-labelledby="dialog-title"
       >
@@ -919,18 +1376,119 @@ function ReadyWorkspace({ module }: { module: string }) {
                     ? `Review ${modal.id}`
                     : `${modal?.id ? "Edit" : "Create"} ${modal?.kind || ""}`}
           </h2>
-          <button aria-label="Close dialog" onClick={() => setModal(null)}>
+          <button aria-label="Close dialog" onClick={closeModal}>
             ×
           </button>
         </div>
         <div className="modal-body">
           <p className="aside-note">
-            SYNTHETIC DATA ONLY · Metadata suggestions require human review.
+            {live ? "PRIVATE CUSTOMER METADATA" : "SYNTHETIC DATA ONLY"} ·
+            Metadata suggestions require human review.
           </p>
+          {modal?.kind === "change" && (
+            <ChangeWizard
+              key={modal.id || "new"}
+              state={s}
+              date={date}
+              initial={c}
+              activityId={modal.activityId}
+              vendorId={modal.vendorId}
+              busy={busy}
+              onSave={act}
+            />
+          )}
+          {modal &&
+            ["activity-detail", "vendor-detail"].includes(modal.kind) &&
+            (a || v) && (
+              <>
+                <nav aria-label="Source breadcrumbs">
+                  <button className="text-btn" onClick={closeModal}>
+                    Workspace
+                  </button>{" "}
+                  / {a ? "Processing register" : "Vendors & DPAs"} /{" "}
+                  {a?.id || v?.id}
+                </nav>
+                <h3>{a?.name || v?.name}</h3>
+                <dl className="kv">
+                  {Object.entries((a || v)!)
+                    .filter(([key]) => !["organization_id"].includes(key))
+                    .map(([key, value]) => (
+                      <div key={key}>
+                        <dt>{fmt(key)}</dt>
+                        <dd>
+                          {Array.isArray(value)
+                            ? value.join(", ")
+                            : String(
+                                value ??
+                                  "Not established from material supplied",
+                              )}
+                        </dd>
+                      </div>
+                    ))}
+                </dl>
+                <h3>Linked source records</h3>
+                {(a?.vendor_ids || v?.activity_ids || []).map((id) => (
+                  <button
+                    key={id}
+                    className="text-btn"
+                    onClick={() =>
+                      open(
+                        id.startsWith("ACT")
+                          ? "activity-detail"
+                          : "vendor-detail",
+                        id,
+                      )
+                    }
+                  >
+                    {id}
+                  </button>
+                ))}
+                <div className="modal-foot">
+                  <button
+                    onClick={() =>
+                      open(a ? "activity" : "vendor", (a || v)!.id)
+                    }
+                  >
+                    Edit record
+                  </button>
+                  <button
+                    className="btn primary"
+                    onClick={() => {
+                      setDirty(false);
+                      setModal({
+                        kind: "change",
+                        activityId: a?.id,
+                        vendorId: v?.id,
+                      });
+                    }}
+                  >
+                    Review change
+                  </button>
+                </div>
+              </>
+            )}
           {modal?.kind === "checks" && c && (
             <>
               <p>
-                {c.title} · {c.activity_id} → {c.vendor_id} → Human review
+                {c.title} ·{" "}
+                <button
+                  className="text-btn"
+                  onClick={() =>
+                    open("activity-detail", c.activity_id || undefined)
+                  }
+                >
+                  {c.activity_id || "No activity"}
+                </button>{" "}
+                →{" "}
+                <button
+                  className="text-btn"
+                  onClick={() =>
+                    open("vendor-detail", c.vendor_id || undefined)
+                  }
+                >
+                  {c.vendor_id || "No vendor"}
+                </button>{" "}
+                → Human review
               </p>
               <p>{c.notes}</p>
               <ul className="checklist">
@@ -938,6 +1496,10 @@ function ReadyWorkspace({ module }: { module: string }) {
                   <li key={r.rule_id}>
                     <div>
                       <b>{r.rule_id}</b>
+                      <p>
+                        {r.subject_id} v{r.record_version} · Examined field:{" "}
+                        {r.examined_field} · Owner: {r.provisional_owner}
+                      </p>
                       <p>Source A: {r.source_a_metadata}</p>
                       <p>
                         Source B / absence: {r.source_b_metadata_or_absence}
@@ -957,6 +1519,7 @@ function ReadyWorkspace({ module }: { module: string }) {
               )}
               <button
                 className="btn primary"
+                disabled={busy || live?.role === "viewer"}
                 onClick={() => act({ type: "record", id: c.id })}
               >
                 Record review request
@@ -1005,7 +1568,24 @@ function ReadyWorkspace({ module }: { module: string }) {
                   {f.owner_team} / {f.due_date || "Unassigned"}
                 </dd>
                 <dt>Source A</dt>
-                <dd>{f.source_a_metadata}</dd>
+                <dd>
+                  {f.source_a_metadata}
+                  <p>
+                    <button
+                      className="text-btn"
+                      onClick={() =>
+                        open(
+                          f.subject_id.startsWith("ACT")
+                            ? "activity-detail"
+                            : "vendor-detail",
+                          f.subject_id,
+                        )
+                      }
+                    >
+                      Open source {f.subject_id}
+                    </button>
+                  </p>
+                </dd>
                 <dt>Source B / absence</dt>
                 <dd>{f.source_b_metadata_or_absence}</dd>
                 <dt>Proposed action</dt>
@@ -1029,26 +1609,32 @@ function ReadyWorkspace({ module }: { module: string }) {
                     {x.decision} · {x.reason} · {x.persona} · {x.timestamp}
                   </p>
                 ))}
-              {buttons([
-                ["Assign / set due date", () => open("assignment", f.id)],
-                ...(f.state !== "closed" &&
-                f.state !== "pending_closure" &&
-                persona === "editor"
-                  ? ([["Request closure", () => open("closure", f.id)]] as [
-                      string,
-                      () => void,
-                    ][])
-                  : []),
-                ...(persona === "reviewer" &&
-                ["closed", "pending_closure"].includes(f.state)
-                  ? ([
-                      [
-                        f.state === "closed" ? "Reopen" : "Review closure",
-                        () => open("review", f.id),
-                      ],
-                    ] as [string, () => void][])
-                  : []),
-              ])}
+              {
+                <ActionButtons
+                  readOnly={live?.role === "viewer"}
+                  key="actions"
+                  items={[
+                    ["Assign / set due date", () => open("assignment", f.id)],
+                    ...(f.state !== "closed" &&
+                    f.state !== "pending_closure" &&
+                    persona === "editor"
+                      ? ([["Request closure", () => open("closure", f.id)]] as [
+                          string,
+                          () => void,
+                        ][])
+                      : []),
+                    ...(persona === "reviewer" &&
+                    ["closed", "pending_closure"].includes(f.state)
+                      ? ([
+                          [
+                            f.state === "closed" ? "Reopen" : "Review closure",
+                            () => open("review", f.id),
+                          ],
+                        ] as [string, () => void][])
+                      : []),
+                  ]}
+                />
+              }
               <p>
                 Assignments and due dates are managed in linked remediation
                 actions.
@@ -1060,13 +1646,16 @@ function ReadyWorkspace({ module }: { module: string }) {
               "activity",
               "vendor",
               "notice",
-              "change",
               "task",
               "closure",
               "review",
               "assignment",
             ].includes(modal.kind) && (
-              <form key={`${modal.kind}-${modal.id}`} onSubmit={submit}>
+              <form
+                key={`${modal.kind}-${modal.id}`}
+                onSubmit={submit}
+                onInput={() => setDirty(true)}
+              >
                 <div className="formgrid">
                   {modal.kind === "activity" && (
                     <>
@@ -1101,6 +1690,11 @@ function ReadyWorkspace({ module }: { module: string }) {
                         label="Retention description"
                         name="retention_description"
                         value={a?.retention_description || "Not established"}
+                      />
+                      <Field
+                        label="Retention evidence reference (metadata only)"
+                        name="retention_evidence_reference"
+                        value={a?.retention_evidence_reference || ""}
                       />
                       {links("vendor_ids", s.vendors, a?.vendor_ids || [])}
                     </>
@@ -1195,50 +1789,6 @@ function ReadyWorkspace({ module }: { module: string }) {
                       )}
                     </>
                   )}
-                  {modal.kind === "change" && (
-                    <>
-                      <Select
-                        label="Change type"
-                        name="change_type"
-                        value="New vendor"
-                        options={[
-                          "New vendor",
-                          "New data field",
-                          "New purpose",
-                          "Contract renewal",
-                          "Updated notice",
-                        ].map((x) => [x, x])}
-                      />
-                      <Field label="Change title" name="title" required />
-                      <Field
-                        label="Responsible owner"
-                        name="owner_team"
-                        value="Engineering"
-                        required
-                      />
-                      <Select
-                        label="Linked processing activity"
-                        name="activity_id"
-                        options={[
-                          ["", "No linked activity"],
-                          ...s.processing_activities
-                            .filter((x) => !x.archived)
-                            .map((x) => [x.id, `${x.id} · ${x.name}`]),
-                        ]}
-                      />
-                      <Select
-                        label="Linked vendor"
-                        name="vendor_id"
-                        options={[
-                          ["", "No linked vendor"],
-                          ...s.vendors
-                            .filter((x) => !x.archived)
-                            .map((x) => [x.id, `${x.id} · ${x.name}`]),
-                        ]}
-                      />
-                      <Area label="Review notes" name="notes" />
-                    </>
-                  )}
                   {modal.kind === "task" && (
                     <>
                       <Select
@@ -1323,21 +1873,26 @@ function ReadyWorkspace({ module }: { module: string }) {
                       />
                       <Area label="Reviewer rationale" name="reason" required />
                       <p>
-                        Reviewer simulation only. Approval updates this
-                        fictional register, not a public notice or legal status.
+                        {live
+                          ? "Customer-authorized reviewer decision."
+                          : "Reviewer SIMULATION ONLY."}{" "}
+                        Approval updates this {live ? "customer" : "fictional"}{" "}
+                        register, not a public notice or legal status.
                       </p>
                     </>
                   )}
                 </div>
                 <div className="modal-foot">
-                  <button type="button" onClick={() => setModal(null)}>
+                  <button type="button" onClick={closeModal}>
                     Cancel
                   </button>
-                  <button className="btn primary" type="submit">
+                  <button className="btn primary" type="submit" disabled={busy}>
                     {modal.kind === "closure"
                       ? "Submit to reviewer"
                       : modal.kind === "review"
-                        ? "Record decision"
+                        ? busy
+                          ? "Saving…"
+                          : "Record decision"
                         : modal.kind === "notice"
                           ? "Save draft"
                           : modal.kind === "change"

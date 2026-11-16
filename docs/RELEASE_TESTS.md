@@ -1,0 +1,11 @@
+# Release gates
+
+Run `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`, `npm run test:e2e`, `npm run test:db` from the checkout. Browser tests start production server on port 3100 and use 1440x1000 / 375x812 Chromium. Local development may remain on port 3000.
+
+`test:db` creates/removes a uniquely named disposable PostgreSQL 17 Docker container, bootstraps Supabase-compatible auth.uid/roles locally, applies the new-install migration, then exercises the real PostgreSQL repository and direct SQL under anon/authenticated/server roles. It never reads a production DB URL: it creates a random local-only connection for the child process. Tests must fail on unavailable Docker; do not silently skip security checks. Authenticated direct SQL tests establish database role/RLS behavior, not hosted Supabase REST/Auth verification.
+
+Required local gates: fixture baseline/reset; ten precise register-field checks; four analytics suggestions and unchanged retry deduplication; CRUD/link/archive/restore; guarded reviewer decisions and no self-approval; versions/conflicts/idempotency; safe CSV formula inputs; live-state JSON/CSV/print; context source details; three-step wizard validation; global pages/record search; keyboard dialog/focus/unsaved guards; seven-route desktop/mobile rendering and no console errors; missing credentials fail closed; tenant A/B denial, forged actor/org IDs, invitation email/role/replay denial, append-only history, composite FKs and unique current/fingerprints.
+
+Hosted release gates (BLOCKED without a supplied project): verify signup/email confirmation/cookie renewal/logout/PKCE against real Supabase; inspect real target schemas, owners, role grants and policies before incremental migration; run tests through real PostgREST using user JWTs and anon key; verify target SSL/secret injection, tenant isolation, organization bootstrap/invite and source CRUD in browser with independently authenticated users. Do not infer these from local database tests.
+
+Storage gate: file upload/download is disabled. Metadata-only operation may be reviewed for private beta separately; real evidence is blocked pending private object access, size/type/scan, retention/deletion and signed URL tests. No automatic live deployment.

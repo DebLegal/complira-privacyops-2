@@ -1,0 +1,6 @@
+-- No proposed starter SQL was supplied with this task.
+-- Reviewed new-install candidate: ../db/migrations/001_private_beta.sql
+-- That migration refuses any existing Complira tables. It is NOT an incremental
+-- production upgrade. Inventory and back up a real target database first, then
+-- prepare a separate incremental migration for that database. Never run with
+-- production credentials during automated local tests.

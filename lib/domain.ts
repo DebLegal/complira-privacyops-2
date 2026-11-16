@@ -1,31 +1,33 @@
 import { z } from "zod";
 import fixture from "../fixtures/maplestack_normalized_demo.json";
 export type Persona = "editor" | "reviewer";
+const dateOrEmpty = z.union([z.iso.date(), z.literal("")]);
 const base = {
-  id: z.string(),
+  id: z.string().min(1).max(120),
   organization_id: z.string().optional(),
-  version: z.number().default(1),
+  version: z.number().int().positive().default(1),
   archived: z.boolean().optional(),
 };
 export const activitySchema = z
   .object({
     ...base,
-    name: z.string().trim().min(1),
-    purpose: z.string().trim().min(1),
-    data_categories: z.array(z.string()),
-    source_system: z.string(),
+    name: z.string().trim().min(1).max(200),
+    purpose: z.string().trim().min(1).max(4000),
+    data_categories: z.array(z.string().max(200)).max(50),
+    source_system: z.string().max(200),
     vendor_ids: z.array(z.string()),
-    owner_team: z.string(),
-    retention_description: z.string(),
+    owner_team: z.string().max(200),
+    retention_description: z.string().max(4000),
     retention_verified: z.boolean().default(false),
+    retention_evidence_reference: z.string().max(500).optional(),
     review_status: z.string().default("requires_document_review"),
   })
   .passthrough();
 export const vendorSchema = z
   .object({
     ...base,
-    name: z.string().trim().min(1),
-    owner_team: z.string(),
+    name: z.string().trim().min(1).max(200),
+    owner_team: z.string().max(200),
     activity_ids: z.array(z.string()),
     provisional_role: z.string(),
     contract_evidence_status: z.enum([
@@ -33,9 +35,9 @@ export const vendorSchema = z
       "provided_pending_review",
       "verified_synthetic_metadata",
     ]),
-    contract_evidence_ids: z.array(z.string()),
-    renewal_date: z.string().nullable(),
-    next_review_date: z.string().nullable(),
+    contract_evidence_ids: z.array(z.string().max(500)).max(50),
+    renewal_date: dateOrEmpty.nullable(),
+    next_review_date: dateOrEmpty.nullable(),
     role_verified: z.boolean().default(false),
   })
   .passthrough();
@@ -43,9 +45,9 @@ export const noticeSchema = z
   .object({
     ...base,
     notice_id: z.string().default("NOTICE-website"),
-    title: z.string().trim().min(1),
-    version_label: z.string(),
-    recorded_date: z.string(),
+    title: z.string().trim().min(1).max(500),
+    version_label: z.string().trim().min(1).max(100),
+    recorded_date: z.iso.date(),
     mapped_activity_ids: z.array(z.string()),
     recipient_vendor_ids: z.array(z.string()).optional(),
     purpose_summary: z.string(),
@@ -63,8 +65,8 @@ export const noticeSchema = z
 export const changeSchema = z
   .object({
     ...base,
-    title: z.string().trim().min(1),
-    owner_team: z.string().trim().min(1),
+    title: z.string().trim().min(1).max(500),
+    owner_team: z.string().trim().min(1).max(200),
     change_type: z.enum([
       "New vendor",
       "New data field",
@@ -74,9 +76,9 @@ export const changeSchema = z
     ]),
     activity_id: z.string().nullable(),
     vendor_id: z.string().nullable(),
-    recorded_date: z.string(),
+    recorded_date: z.iso.date(),
     state: z.string(),
-    notes: z.string().optional(),
+    notes: z.string().max(4000).optional(),
   })
   .passthrough();
 export const findingSchema = z
@@ -86,8 +88,8 @@ export const findingSchema = z
     area: z.string(),
     suggested_severity: z.string(),
     state: z.string(),
-    owner_team: z.string(),
-    due_date: z.string(),
+    owner_team: z.string().max(200),
+    due_date: dateOrEmpty,
     subject_id: z.string(),
     source_a_metadata: z.string(),
     source_b_metadata_or_absence: z.string(),
@@ -103,9 +105,9 @@ export const taskSchema = z
   .object({
     ...base,
     finding_id: z.string(),
-    title: z.string().trim().min(1),
-    owner_team: z.string().trim().min(1),
-    due_date: z.string(),
+    title: z.string().trim().min(1).max(500),
+    owner_team: z.string().trim().min(1).max(200),
+    due_date: dateOrEmpty,
     state: z.enum([
       "open",
       "in_progress",
@@ -124,6 +126,7 @@ const decisionSchema = z.object({
   reason: z.string(),
   persona: z.enum(["editor", "reviewer"]),
   timestamp: z.string(),
+  actor_id: z.string().optional(),
 });
 const evidenceSchema = z.object({
   id: z.string(),
@@ -133,6 +136,7 @@ const evidenceSchema = z.object({
   persona: z.enum(["editor", "reviewer"]),
   timestamp: z.string(),
   source_verified: z.literal(false),
+  actor_id: z.string().optional(),
 });
 export const workspaceSchema = z
   .object({
@@ -150,7 +154,9 @@ export const workspaceSchema = z
         action: z.string(),
         subject_id: z.string(),
         timestamp: z.string(),
-        persona: z.enum(["editor", "reviewer"]),
+        persona: z.enum(["editor", "reviewer", "owner", "admin", "viewer"]),
+        actor_role: z.string().optional(),
+        actor_id: z.string().optional(),
       }),
     ),
   })
@@ -188,6 +194,9 @@ export type Rule = {
   suggested_action: string;
   suggested_severity: string;
   fingerprint: string;
+  record_version: number;
+  examined_field: string;
+  provisional_owner: string;
 };
 export function evaluate(s: State, c: Change, date: string): Rule[] {
   const a = s.processing_activities.find((x) => x.id === c.activity_id),
@@ -204,6 +213,21 @@ export function evaluate(s: State, c: Change, date: string): Rule[] {
     hits.push({
       rule_id,
       subject_id,
+      record_version: subject_id === a?.id ? a.version : v?.version || 1,
+      examined_field: {
+        MAP_OWNERSHIP_MISSING: "owner_team",
+        VENDOR_CONTRACT_EVIDENCE_MISSING: "contract_evidence_status",
+        VENDOR_RENEWAL_DUE: "renewal_date",
+        NOTICE_PURPOSE_MISMATCH: "mapped_activity_ids",
+        NOTICE_RECIPIENT_MISMATCH: "recipient_vendor_ids",
+        RETENTION_RULE_UNDEFINED: "retention_description",
+        VENDOR_ROLE_UNDETERMINED: "provisional_role",
+        EVIDENCE_NOT_VERIFIED: "contract_evidence_status",
+        REMEDIATION_OVERDUE: "remediation_actions.due_date",
+        REVIEW_OVERDUE: "next_review_date",
+      }[rule_id],
+      provisional_owner:
+        (subject_id === a?.id ? a.owner_team : v?.owner_team) || c.owner_team,
       source_a_metadata: a
         ? `${a.id} v${a.version}: ${a.name}; ${a.purpose}`
         : v
@@ -331,7 +355,7 @@ export type Command =
       id: string;
     }
   | { type: "assignment"; id: string; owner_team: string; due_date: string }
-  | { type: "record"; id: string }
+  | { type: "record"; id: string; evaluation_date?: string }
   | { type: "submit_notice"; id: string }
   | { type: "closure"; id: string; reference: string; note: string }
   | {
@@ -349,6 +373,8 @@ export function transition(
   cmd: Command,
   persona: Persona,
   timestamp: string,
+  actorId?: string,
+  actorRole?: string,
 ): State {
   const s = structuredClone(state);
   const date = timestamp.slice(0, 10);
@@ -357,6 +383,11 @@ export function transition(
     record: T,
   ) => {
     const i = rows.findIndex((x) => x.id === record.id);
+    if (i >= 0)
+      requireThat(
+        record.version === rows[i].version,
+        "Version conflict: reload the current record",
+      );
     const r = { ...record, version: i < 0 ? 1 : rows[i].version + 1 };
     if (i < 0) rows.push(r);
     else rows[i] = r;
@@ -422,7 +453,13 @@ export function transition(
       ),
       "Unknown activity",
     );
-    upsert(s.notice_versions, noticeSchema.parse(cmd.record));
+    upsert(
+      s.notice_versions,
+      noticeSchema.parse({
+        ...cmd.record,
+        created_by: old?.created_by || actorId,
+      }),
+    );
   }
   if (cmd.type === "change") {
     requireThat(
@@ -435,7 +472,14 @@ export function transition(
         s.vendors.some((v) => v.id === cmd.record.vendor_id),
       "Unknown vendor",
     );
-    upsert(s.change_requests, changeSchema.parse(cmd.record));
+    const oldChange = s.change_requests.find((x) => x.id === cmd.record.id);
+    upsert(
+      s.change_requests,
+      changeSchema.parse({
+        ...cmd.record,
+        created_by: oldChange?.created_by || actorId,
+      }),
+    );
   }
   if (cmd.type === "task") {
     requireThat(
@@ -456,7 +500,7 @@ export function transition(
   if (cmd.type === "record") {
     const c = s.change_requests.find((x) => x.id === cmd.id);
     requireThat(c, "Change missing");
-    for (const r of evaluate(s, c, date)) {
+    for (const r of evaluate(s, c, cmd.evaluation_date || date)) {
       if (s.findings.some((f) => f.fingerprint === r.fingerprint)) continue;
       const id = nextId(s.findings, "FND");
       s.findings.push({
@@ -486,6 +530,7 @@ export function transition(
       });
     }
     c.state = "review_requested";
+    c.version++;
   }
   if (cmd.type === "submit_notice") {
     const n = s.notice_versions.find((x) => x.id === cmd.id);
@@ -494,6 +539,7 @@ export function transition(
       "Draft required",
     );
     n.status = "pending_review";
+    n.submitted_by = actorId;
     n.version++;
   }
   if (cmd.type === "closure") {
@@ -516,8 +562,10 @@ export function transition(
       persona,
       timestamp,
       source_verified: false,
+      actor_id: actorId,
     });
     f.state = "pending_closure";
+    f.closure_requested_by = actorId;
     f.version++;
     s.remediation_actions
       .filter((t) => t.finding_id === f.id)
@@ -540,6 +588,10 @@ export function transition(
         n?.status === "pending_review" && cmd.decision !== "reopen",
         "Pending notice required",
       );
+      requireThat(
+        !actorId || n.submitted_by !== actorId,
+        "Self-approval is prohibited",
+      );
       if (cmd.decision === "approve") {
         s.notice_versions
           .filter((x) => x.status.startsWith("current"))
@@ -560,6 +612,12 @@ export function transition(
               s.evidence_records.some((e) => e.finding_id === f.id),
         "Valid pending closure and evidence required",
       );
+      requireThat(
+        !actorId ||
+          cmd.decision === "reopen" ||
+          f.closure_requested_by !== actorId,
+        "Self-approval is prohibited",
+      );
       f.state = cmd.decision === "approve" ? "closed" : "open_action";
       f.version++;
       s.remediation_actions
@@ -577,6 +635,7 @@ export function transition(
       reason: cmd.reason.trim(),
       persona,
       timestamp,
+      actor_id: actorId,
     });
   }
   s.audit_events.push({
@@ -585,6 +644,8 @@ export function transition(
     subject_id: "id" in cmd ? cmd.id : cmd.record.id,
     persona,
     timestamp,
+    actor_id: actorId,
+    actor_role: actorRole,
   });
   return workspaceSchema.parse(s);
 }
@@ -596,6 +657,25 @@ export function csvCell(value: unknown) {
 export const exportJson = (s: State, timestamp: string) => ({
   schemaVersion: "complira.export.v1",
   mode: "synthetic_only",
+  assumptions: [
+    "Register metadata is not reviewed document text",
+    "Legal references are unverified and version-specific",
+  ],
+  outstanding_actions: s.remediation_actions.filter(
+    (t) => t.state !== "closed",
+  ),
+  record_versions: Object.fromEntries(
+    [
+      s.processing_activities,
+      s.vendors,
+      s.notice_versions,
+      s.change_requests,
+      s.findings,
+      s.remediation_actions,
+    ]
+      .flat()
+      .map((r) => [r.id, r.version]),
+  ),
   disclaimer:
     "SYNTHETIC DATA ONLY — not an audit, certification or legal opinion",
   exported_at: timestamp,
@@ -624,6 +704,8 @@ export function exportCsv(s: State) {
       "State",
       "Owner",
       "Due date",
+      "Record version",
+      "Linked change",
       "Review decisions",
     ],
     ...s.findings.map((f) => [
@@ -635,6 +717,8 @@ export function exportCsv(s: State) {
       f.state,
       f.owner_team,
       f.due_date,
+      f.version,
+      f.change_id || "",
       s.review_decisions
         .filter((d) => d.subject_id === f.id)
         .map((d) => `${d.decision}: ${d.reason}`)
@@ -644,3 +728,50 @@ export function exportCsv(s: State) {
     .map((r) => r.map(csvCell).join(","))
     .join("\r\n");
 }
+
+export const DEMO_CHECK_DATE = "2026-11-16";
+export const emptyWorkspace = (): State =>
+  workspaceSchema.parse({
+    processing_activities: [],
+    vendors: [],
+    notice_versions: [],
+    change_requests: [],
+    findings: [],
+    remediation_actions: [],
+    evidence_records: [],
+    review_decisions: [],
+    audit_events: [],
+  });
+export const commandSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("activity"), record: activitySchema.strip() }),
+  z.object({ type: z.literal("vendor"), record: vendorSchema.strip() }),
+  z.object({ type: z.literal("notice"), record: noticeSchema.strip() }),
+  z.object({ type: z.literal("change"), record: changeSchema.strip() }),
+  z.object({ type: z.literal("task"), record: taskSchema.strip() }),
+  z.object({
+    type: z.literal("archive"),
+    collection: z.enum(["processing_activities", "vendors"]),
+    id: z.string().min(1),
+  }),
+  z.object({
+    type: z.literal("assignment"),
+    id: z.string().min(1),
+    owner_team: z.string().trim().min(1).max(200),
+    due_date: dateOrEmpty,
+  }),
+  z.object({ type: z.literal("record"), id: z.string().min(1) }),
+  z.object({ type: z.literal("submit_notice"), id: z.string().min(1) }),
+  z.object({
+    type: z.literal("closure"),
+    id: z.string().min(1),
+    reference: z.string().trim().min(4).max(500),
+    note: z.string().trim().min(8).max(4000),
+  }),
+  z.object({
+    type: z.literal("review"),
+    id: z.string().min(1),
+    target: z.enum(["notice", "finding"]),
+    decision: z.enum(["approve", "reject", "reopen"]),
+    reason: z.string().trim().min(8).max(4000),
+  }),
+]);

@@ -1224,3 +1224,177 @@ button.primary:hover {
   margin-top: auto;
   border-top: 1px solid #294051;
 }
+/* PrivacyOps 3.0: shared visual tokens, keyboard-friendly reviews and 375px layout. */
+:root {
+  --bg: #f6f8fb;
+}
+body {
+  background: #f6f8fb;
+}
+.hero-review {
+  border: 1px solid #dce5ed;
+  border-left: 4px solid #e86f24;
+  border-radius: 12px;
+  background: white;
+  padding: 22px;
+  margin-bottom: 20px;
+}
+.hero-review h2 {
+  font-size: 20px;
+  letter-spacing: -0.4px;
+  margin: 6px 0;
+}
+.hero-review p {
+  max-width: 760px;
+  color: #536b7c;
+}
+.search-launch {
+  font-size: 12px;
+  color: #506679;
+  background: #f6f8fb;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+kbd {
+  font:
+    11px ui-monospace,
+    monospace;
+  border: 1px solid #d7e1e8;
+  border-radius: 4px;
+  padding: 2px 5px;
+}
+.search-results {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.search-result {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  border-bottom: 1px solid #e7edf3;
+  border-radius: 0;
+  padding: 12px;
+}
+.search-result small {
+  display: block;
+  color: #647989;
+  font-weight: 400;
+}
+.wizard-steps {
+  display: flex;
+  padding: 0;
+  gap: 10px;
+  list-style: none;
+  justify-content: space-between;
+}
+.wizard-steps li {
+  font-size: 12px;
+  color: #647989;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.wizard-steps li span {
+  display: grid;
+  place-items: center;
+  width: 25px;
+  height: 25px;
+  border-radius: 50%;
+  background: #edf2f7;
+}
+.wizard-steps [aria-current="step"] {
+  color: #963e0c;
+  font-weight: 700;
+}
+.wizard-steps [aria-current="step"] span {
+  background: #fff1e6;
+  color: #a2440d;
+  border: 1px solid #f0be98;
+}
+.auth-card {
+  max-width: 620px;
+  margin: 60px auto;
+  background: white;
+  padding: 30px;
+  border: 1px solid #dce5ed;
+  border-radius: 12px;
+}
+.auth-card form {
+  display: grid;
+  gap: 14px;
+}
+.auth-card h1 {
+  font-size: 26px;
+}
+.auth-card p {
+  line-height: 1.7;
+}
+.role-badge {
+  background: #eff4f8;
+  padding: 6px 10px;
+  border-radius: 5px;
+  font-size: 12px;
+}
+.kv > div {
+  display: contents;
+}
+.kv dt {
+  font-weight: 700;
+}
+.kv dd {
+  margin: 0 0 8px;
+}
+.skip-link {
+  position: absolute;
+  top: -100px;
+  left: 12px;
+  z-index: 100;
+}
+.skip-link:focus {
+  top: 12px;
+  background: white;
+  padding: 12px;
+}
+@media (max-width: 800px) {
+  .topbar {
+    justify-content: flex-start;
+  }
+  .topbar > span:first-child {
+    flex: 1;
+  }
+  .search-launch {
+    order: 3;
+    width: 100%;
+    justify-content: space-between;
+  }
+  .auth-card {
+    margin: 16px;
+    padding: 22px;
+  }
+  .wizard-steps {
+    gap: 5px;
+  }
+  .wizard-steps li {
+    font-size: 11px;
+    gap: 4px;
+  }
+  .hero-review {
+    padding: 17px;
+  }
+  .hero-review h2 {
+    font-size: 18px;
+  }
+  .sidebar nav a {
+    min-height: 44px;
+  }
+  .data-table td {
+    min-width: 100px;
+    word-break: normal;
+  }
+  .formgrid {
+    gap: 14px;
+  }
+}

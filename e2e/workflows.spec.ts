@@ -100,11 +100,17 @@ test("analytics checks, deduplication, evidence closure, notice version and expo
   await page.getByRole("button", { name: "+ New change", exact: true }).click();
   await dialog(page).getByLabel("Change title").fill("Add analytics processor");
   await dialog(page)
+    .getByRole("button", { name: "Next: Link sources" })
+    .click();
+  await dialog(page)
     .getByLabel("Linked processing activity")
     .selectOption("ACT-003");
   await dialog(page)
     .getByLabel("Linked vendor", { exact: true })
     .selectOption("VEN-003");
+  await dialog(page)
+    .getByRole("button", { name: "Preview checks", exact: true })
+    .click();
   await dialog(page)
     .getByRole("button", { name: "Create change", exact: true })
     .click();
@@ -209,7 +215,7 @@ test("dialog keyboard focus, mobile navigation, unknown routes denied", async ({
   await page.keyboard.press("Tab");
   expect(
     await page.evaluate(() =>
-      document.querySelector("dialog")?.contains(document.activeElement),
+      document.querySelector("dialog[open]")?.contains(document.activeElement),
     ),
   ).toBe(true);
   await page.keyboard.press("Escape");
@@ -235,7 +241,9 @@ test("dialog keyboard focus, mobile navigation, unknown routes denied", async ({
     ),
   ).toBe(true);
   await page.goto("/app");
-  await expect(page.getByText("This page could not be found.")).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Customer workspace unavailable" }),
+  ).toBeVisible();
   await page.goto("/demo/assessment");
   await expect(page.getByText("This page could not be found.")).toBeVisible();
 });
